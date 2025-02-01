@@ -74,12 +74,13 @@ model Website {
   updatedAt DateTime? @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
 
-  user        User?         @relation("user", fields: [userId], references: [id])
-  createUser  User?         @relation("createUser", fields: [createdBy], references: [id])
-  team        Team?         @relation(fields: [teamId], references: [id])
-  eventData   EventData[]
-  report      Report[]
-  sessionData SessionData[]
+  user         User?          @relation("user", fields: [userId], references: [id])
+  createUser   User?          @relation("createUser", fields: [createdBy], references: [id])
+  team         Team?          @relation(fields: [teamId], references: [id])
+  eventData    EventData[]
+  report       Report[]
+  sessionData  SessionData[]
+  websiteStats WebsiteStats[] // Add this line to complete the relation
 
   @@index([userId])
   @@index([teamId])
@@ -219,4 +220,42 @@ model Report {
   @@index([type])
   @@index([name])
   @@map("report")
+}
+
+enum AggregationPeriod {
+  daily
+  weekly
+  monthly
+}
+
+model WebsiteStats {
+  id             String            @id @default(uuid()) @map("stats_id") @db.Uuid
+  websiteId      String            @map("website_id") @db.Uuid
+  startDate      DateTime          @map("start_date") @db.Timestamptz(6)
+  endDate        DateTime          @map("end_date") @db.Timestamptz(6)
+  period         AggregationPeriod
+  pageviews      Int              @default(0)
+  sessions       Int              @default(0)
+  bounces        Int              @default(0)
+  totalDuration  Int              @default(0) @map("total_duration")
+  uniqueVisitors Int              @default(0) @map("unique_visitors")
+  
+  // Device metrics
+  desktopViews   Int              @default(0) @map("desktop_views")
+  mobileViews    Int              @default(0) @map("mobile_views")
+  tabletViews    Int              @default(0) @map("tablet_views")
+  
+  // JSON data
+  referrerData   Json?            @map("referrer_data") @db.JsonB
+  urlData        Json?            @map("url_data") @db.JsonB
+  
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  
+  website        Website          @relation(fields: [websiteId], references: [id])
+
+  @@unique([websiteId, startDate, period])
+  @@index([websiteId, startDate])
+  @@index([period])
+  @@map("website_stats")
 }
