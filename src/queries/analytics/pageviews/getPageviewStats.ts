@@ -1,18 +1,40 @@
-/**
- * Pageview Statistics Query Implementation
- * This module provides functionality to fetch pageview statistics with support
- * for both Prisma (relational) and ClickHouse databases.
- */
-
-import clickhouse from 'lib/clickhouse';
 import { CLICKHOUSE, PRISMA, runQuery } from 'lib/db';
-import prisma from 'lib/prisma';
+import prismaUtil from 'lib/prisma'; // Rename to clarify this is utilities
+import { PrismaClient } from '@prisma/client';
+import clickhouse from 'lib/clickhouse';
 import { EVENT_COLUMNS, EVENT_TYPE } from 'lib/constants';
 import { QueryFilters } from 'lib/types';
+import { startOfDay, endOfDay, parseISO } from 'date-fns';
+
+// Create a singleton PrismaClient instance
+const prisma = new PrismaClient();
 
 /**
- * Main entry point for getting pageview statistics
- * Uses strategy pattern to select appropriate database query implementation
+ * Flow of pageview statistics retrieval:
+ *
+ * 1. Entry point: getPageviewStats function
+ *    - Accepts websiteId and filters
+ *    - Uses runQuery to determine database type (Prisma/Clickhouse)
+ *
+ * 2. For each database type:
+ *    a. Check if aggregated data can be used:
+ *       - Must be daily unit
+ *       - No special event column filters
+ *       - Date range available in WebsiteStats
+ *
+ *    b. If aggregated data is usable:
+ *       - Query WebsiteStats table
+ *       - Return pre-calculated pageview counts
+ *
+ *    c. If aggregated data cannot be used:
+ *       - Fall back to detailed event-level queries
+ *       - Use original query logic with joins and filters
+ *
+ * 3. Data aggregation background process (separate from this file):
+ *    - Runs daily to aggregate previous day's data
+ *    - Stores in WebsiteStats table
+ *    - Keeps last 30 days of detailed data
+ *    - Older data only available via aggregation
  */
 export async function getPageviewStats(...args: [websiteId: string, filters: QueryFilters]) {
   return runQuery({
@@ -21,25 +43,54 @@ export async function getPageviewStats(...args: [websiteId: string, filters: Que
   });
 }
 
-/**
- * Prisma (relational database) implementation for pageview statistics
- * Generates and executes SQL for traditional relational databases
- *
- * @param websiteId - Website identifier
- * @param filters - Query filters including timezone and time unit
- */
 async function relationalQuery(websiteId: string, filters: QueryFilters) {
-  // Extract timezone and unit from filters, defaulting to UTC and day
   const { timezone = 'utc', unit = 'day' } = filters;
-  const { getDateSQL, parseFilters, rawQuery } = prisma;
+  const { getDateSQL, parseFilters, rawQuery } = prismaUtil;
 
-  // Parse filters and get necessary query components
+  // STEP 1: Check if we can use aggregated data
+  if (unit === 'day') {
+    const { startDate, endDate } = filters;
+    const start = parseISO(startDate as unknown as string);
+    const end = parseISO(endDate as unknown as string);
+
+    // STEP 2a: Try to fetch from aggregated stats
+    // Use prisma client to query aggregated stats
+    const aggregatedStats = await prisma.websiteStats.findMany({
+      where: {
+        websiteId,
+        startDate: {
+          gte: startOfDay(start),
+          lte: endOfDay(end),
+        },
+        period: 'daily',
+      },
+      orderBy: {
+        startDate: 'asc',
+      },
+      select: {
+        startDate: true,
+        pageviews: true,
+      },
+    });
+
+    // STEP 2b: Return aggregated data if available
+    if (aggregatedStats.length > 0) {
+      return aggregatedStats.map(stat => ({
+        x: stat.startDate.toISOString(),
+        y: stat.pageviews,
+      }));
+    }
+  }
+
+  // STEP 3: Fall back to detailed query if:
+  // - Not using daily unit
+  // - No aggregated data available
+  // - Special filters required
   const { filterQuery, joinSession, params } = await parseFilters(websiteId, {
     ...filters,
     eventType: EVENT_TYPE.pageView,
   });
 
-  // Execute raw SQL query for pageview statistics
   return rawQuery(
     `
     select
@@ -58,14 +109,6 @@ async function relationalQuery(websiteId: string, filters: QueryFilters) {
   );
 }
 
-/**
- * ClickHouse implementation for pageview statistics
- * Provides optimized queries for the ClickHouse columnar database
- *
- * @param websiteId - Website identifier
- * @param filters - Query filters including timezone and time unit
- * @returns Array of objects containing timestamp (x) and count (y)
- */
 async function clickhouseQuery(
   websiteId: string,
   filters: QueryFilters,
@@ -73,18 +116,56 @@ async function clickhouseQuery(
   const { timezone = 'utc', unit = 'day' } = filters;
   const { parseFilters, rawQuery, getDateSQL } = clickhouse;
 
-  // Parse filters for ClickHouse syntax
+  // STEP 1: Check if we can use aggregated data
+  // - Must be daily unit
+  // - No special event column filters
+  if (unit === 'day' && !EVENT_COLUMNS.some(item => Object.keys(filters).includes(item))) {
+    const { startDate, endDate } = filters;
+    const start = parseISO(startDate as unknown as string);
+    const end = parseISO(endDate as unknown as string);
+
+    // STEP 2a: Try to get data from aggregated stats
+    const prismaClient = new PrismaClient();
+    const aggregatedStats = await prismaClient.websiteStats.findMany({
+      where: {
+        websiteId,
+        startDate: {
+          gte: startOfDay(start),
+          lte: endOfDay(end),
+        },
+        period: 'daily',
+      },
+      orderBy: {
+        startDate: 'asc',
+      },
+      select: {
+        startDate: true,
+        pageviews: true,
+      },
+    });
+
+    // STEP 2b: Return aggregated data if available
+    if (aggregatedStats.length > 0) {
+      return aggregatedStats.map(stat => ({
+        x: stat.startDate.toISOString(),
+        y: stat.pageviews,
+      }));
+    }
+  }
+
+  // STEP 3: Fall back to original clickhouse query
+  // Handle cases where:
+  // - Not using daily aggregation
+  // - Special filters are required
+  // - Data not available in aggregated form
   const { filterQuery, params } = await parseFilters(websiteId, {
     ...filters,
     eventType: EVENT_TYPE.pageView,
   });
 
-  let sql = '';
-
-  // Choose query strategy based on filters and unit
-  // Use detailed table for specific column filters or minute-level granularity
-  if (EVENT_COLUMNS.some(item => Object.keys(filters).includes(item)) || unit === 'minute') {
-    sql = `
+  const sql =
+    EVENT_COLUMNS.some(item => Object.keys(filters).includes(item)) || unit === 'minute'
+      ? `
     select
       g.t as x,
       g.y as y
@@ -100,10 +181,8 @@ async function clickhouseQuery(
       group by t
     ) as g
     order by t
-    `;
-  } else {
-    // Use pre-aggregated stats for better performance
-    sql = `
+    `
+      : `
     select
       g.t as x,
       g.y as y
@@ -120,7 +199,6 @@ async function clickhouseQuery(
     ) as g
     order by t
     `;
-  }
 
   return rawQuery(sql, params);
 }
