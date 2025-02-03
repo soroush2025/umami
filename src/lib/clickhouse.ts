@@ -37,7 +37,12 @@ function getClient() {
     url: `${protocol}//${hostname}:${port}`,
     database: pathname.replace('/', ''),
     username: username,
-    password,
+    password: password,
+    clickhouse_settings: {
+      date_time_input_format: 'best_effort',
+      date_time_output_format: 'iso',
+      timezone: 'UTC',
+    },
   });
 
   if (process.env.NODE_ENV !== 'production') {
@@ -202,10 +207,15 @@ async function rawQuery<T = unknown>(
 
 async function insert(table: string, values: any[]) {
   await connect();
-
-  return clickhouse.insert({ table, values, format: 'JSONEachRow' });
+  return clickhouse.insert({
+    table,
+    values,
+    format: 'JSONEachRow',
+    clickhouse_settings: {
+      date_time_input_format: 'best_effort',
+    },
+  });
 }
-
 async function findUnique(data: any[]) {
   if (data.length > 1) {
     throw `${data.length} records found when expecting 1.`;

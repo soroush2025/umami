@@ -11,12 +11,14 @@ BigInt.prototype['toJSON'] = function () {
 };
 
 export function getDatabaseType(url = process.env.DATABASE_URL) {
+  // Add clickhouse check first
+  if (process.env.CLICKHOUSE_URL) {
+    return CLICKHOUSE;
+  }
   const type = url && url.split(':')[0];
-
   if (type === 'postgres') {
     return POSTGRESQL;
   }
-
   return type;
 }
 
@@ -25,10 +27,8 @@ export async function runQuery(queries: any) {
     if (queries[KAFKA]) {
       return queries[KAFKA]();
     }
-
     return queries[CLICKHOUSE]();
   }
-
   const db = getDatabaseType();
 
   if (db === POSTGRESQL || db === MYSQL) {
