@@ -41,7 +41,6 @@ function getClient() {
     clickhouse_settings: {
       date_time_input_format: 'best_effort',
       date_time_output_format: 'iso',
-      timezone: 'UTC',
     },
   });
 
@@ -196,10 +195,6 @@ async function rawQuery<T = unknown>(
     query: query,
     query_params: params,
     format: 'JSONEachRow',
-    clickhouse_settings: {
-      date_time_output_format: 'iso',
-      output_format_json_quote_64bit_integers: 0,
-    },
   });
 
   return (await resultSet.json()) as T;
