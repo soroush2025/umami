@@ -28,39 +28,6 @@ model User {
   @@map("user")
 }
 
-model Session {
-  id           String    @id @unique @map("session_id") @db.VarChar(36)
-  websiteId    String    @map("website_id") @db.VarChar(36)
-  hostname     String?   @db.VarChar(100)
-  browser      String?   @db.VarChar(20)
-  os           String?   @db.VarChar(20)
-  device       String?   @db.VarChar(20)
-  screen       String?   @db.VarChar(11)
-  language     String?   @db.VarChar(35)
-  country      String?   @db.Char(2)
-  subdivision1 String?   @db.Char(20)
-  subdivision2 String?   @db.VarChar(50)
-  city         String?   @db.VarChar(50)
-  createdAt    DateTime? @default(now()) @map("created_at") @db.Timestamp(0)
-
-  websiteEvent WebsiteEvent[]
-  sessionData  SessionData[]
-
-  @@index([createdAt])
-  @@index([websiteId])
-  @@index([websiteId, createdAt])
-  @@index([websiteId, createdAt, hostname])
-  @@index([websiteId, createdAt, browser])
-  @@index([websiteId, createdAt, os])
-  @@index([websiteId, createdAt, device])
-  @@index([websiteId, createdAt, screen])
-  @@index([websiteId, createdAt, language])
-  @@index([websiteId, createdAt, country])
-  @@index([websiteId, createdAt, subdivision1])
-  @@index([websiteId, createdAt, city])
-  @@map("session")
-}
-
 model Website {
   id        String    @id @unique @map("website_id") @db.VarChar(36)
   name      String    @db.VarChar(100)
@@ -87,85 +54,6 @@ model Website {
   @@index([shareId])
   @@index([createdBy])
   @@map("website")
-}
-
-model WebsiteEvent {
-  id             String    @id() @map("event_id") @db.VarChar(36)
-  websiteId      String    @map("website_id") @db.VarChar(36)
-  sessionId      String    @map("session_id") @db.VarChar(36)
-  visitId        String    @map("visit_id") @db.VarChar(36)
-  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamp(0)
-  urlPath        String    @map("url_path") @db.VarChar(500)
-  urlQuery       String?   @map("url_query") @db.VarChar(500)
-  referrerPath   String?   @map("referrer_path") @db.VarChar(500)
-  referrerQuery  String?   @map("referrer_query") @db.VarChar(500)
-  referrerDomain String?   @map("referrer_domain") @db.VarChar(500)
-  pageTitle      String?   @map("page_title") @db.VarChar(500)
-  eventType      Int       @default(1) @map("event_type") @db.UnsignedInt
-  eventName      String?   @map("event_name") @db.VarChar(50)
-  tag            String?   @db.VarChar(50)
-
-  eventData EventData[]
-  session   Session     @relation(fields: [sessionId], references: [id])
-
-  @@index([createdAt])
-  @@index([sessionId])
-  @@index([visitId])
-  @@index([websiteId])
-  @@index([websiteId, createdAt])
-  @@index([websiteId, createdAt, urlPath])
-  @@index([websiteId, createdAt, urlQuery])
-  @@index([websiteId, createdAt, referrerDomain])
-  @@index([websiteId, createdAt, pageTitle])
-  @@index([websiteId, createdAt, eventName])
-  @@index([websiteId, createdAt, tag])
-  @@index([websiteId, sessionId, createdAt])
-  @@index([websiteId, visitId, createdAt])
-  @@map("website_event")
-}
-
-model EventData {
-  id             String    @id() @map("event_data_id") @db.VarChar(36)
-  websiteId      String    @map("website_id") @db.VarChar(36)
-  websiteEventId String    @map("website_event_id") @db.VarChar(36)
-  dataKey        String    @map("data_key") @db.VarChar(500)
-  stringValue    String?   @map("string_value") @db.VarChar(500)
-  numberValue    Decimal?  @map("number_value") @db.Decimal(19, 4)
-  dateValue      DateTime? @map("date_value") @db.Timestamp(0)
-  dataType       Int       @map("data_type") @db.UnsignedInt
-  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamp(0)
-
-  website      Website      @relation(fields: [websiteId], references: [id])
-  websiteEvent WebsiteEvent @relation(fields: [websiteEventId], references: [id])
-
-  @@index([createdAt])
-  @@index([websiteId])
-  @@index([websiteEventId])
-  @@index([websiteId, createdAt])
-  @@index([websiteId, createdAt, dataKey])
-  @@map("event_data")
-}
-
-model SessionData {
-  id          String    @id() @map("session_data_id") @db.VarChar(36)
-  websiteId   String    @map("website_id") @db.VarChar(36)
-  sessionId   String    @map("session_id") @db.VarChar(36)
-  dataKey     String    @map("data_key") @db.VarChar(500)
-  stringValue String?   @map("string_value") @db.VarChar(500)
-  numberValue Decimal?  @map("number_value") @db.Decimal(19, 4)
-  dateValue   DateTime? @map("date_value") @db.Timestamp(0)
-  dataType    Int       @map("data_type") @db.UnsignedInt
-  createdAt   DateTime? @default(now()) @map("created_at") @db.Timestamp(0)
-
-  website Website @relation(fields: [websiteId], references: [id])
-  session Session @relation(fields: [sessionId], references: [id])
-
-  @@index([createdAt])
-  @@index([websiteId])
-  @@index([sessionId])
-  @@index([sessionId, createdAt])
-  @@index([websiteId, createdAt, dataKey])
-  @@map("session_data")
 }
 
 model Team {

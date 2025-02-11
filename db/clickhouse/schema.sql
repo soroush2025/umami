@@ -1,80 +1,6 @@
 -- Create database if not exists
 DROP DATABASE IF EXISTS umami;
 CREATE DATABASE IF NOT EXISTS umami;
-
-
--- User table
-CREATE TABLE IF NOT EXISTS umami.user (
-    user_id UUID,
-    username String,
-    password String,
-    role String,
-    logo_url Nullable(String),
-    display_name Nullable(String),
-    created_at DateTime('UTC') DEFAULT now(),
-    updated_at DateTime('UTC') DEFAULT now(),
-    deleted_at Nullable(DateTime('UTC')),
-    PRIMARY KEY (user_id)
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY user_id;
--- Team table
-CREATE TABLE IF NOT EXISTS umami.team (
-    team_id UUID,
-    name String,
-    access_code Nullable(String),
-    logo_url Nullable(String),
-    created_at DateTime('UTC') DEFAULT now(),
-    updated_at DateTime('UTC') DEFAULT now(),
-    deleted_at Nullable(DateTime('UTC')),
-    PRIMARY KEY (team_id)
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY team_id;
--- Team User table
-CREATE TABLE IF NOT EXISTS umami.team_user (
-    team_id UUID,
-    user_id UUID,
-    team_user_id UUID,
-    role String,
-    created_at DateTime('UTC') DEFAULT now(),
-    updated_at DateTime('UTC') DEFAULT now(),
-    PRIMARY KEY (team_id, user_id) -- Changed to match ORDER BY
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY (team_id, user_id);
--- Website table
-CREATE TABLE IF NOT EXISTS umami.website (
-    website_id UUID,
-    name String,
-    domain Nullable(String),
-    share_id Nullable(String),
-    reset_at Nullable(DateTime('UTC')),
-    user_id Nullable(UUID),
-    team_id Nullable(UUID),
-    created_by Nullable(UUID),
-    created_at DateTime('UTC') DEFAULT now(),
-    updated_at DateTime('UTC') DEFAULT now(),
-    deleted_at Nullable(DateTime('UTC')),
-    PRIMARY KEY (website_id)
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY website_id;
-
-
--- Report table
-
-CREATE TABLE IF NOT EXISTS umami.report (
-    report_id UUID,
-    user_id UUID,
-    website_id UUID,
-    type String,
-    name String,
-    description String,
-    parameters String,
-    created_at DateTime('UTC') DEFAULT now(),
-    updated_at DateTime('UTC') DEFAULT now(),
-    PRIMARY KEY (report_id)
-) ENGINE = ReplacingMergeTree(updated_at)
-ORDER BY (report_id);
-
-
 -- Create Event
 CREATE TABLE IF NOT EXISTS umami.website_event (
     website_id UUID,
@@ -118,6 +44,7 @@ ORDER BY (
         session_id,
         visit_id
     ) SETTINGS index_granularity = 8192;
+
 CREATE TABLE IF NOT EXISTS umami.event_data (
     website_id UUID,
     session_id UUID,
@@ -133,6 +60,7 @@ CREATE TABLE IF NOT EXISTS umami.event_data (
     job_id Nullable(UUID)
 ) ENGINE = MergeTree
 ORDER BY (website_id, event_id, data_key, created_at) SETTINGS index_granularity = 8192;
+
 CREATE TABLE IF NOT EXISTS umami.session_data (
     website_id UUID,
     session_id UUID,
@@ -145,7 +73,7 @@ CREATE TABLE IF NOT EXISTS umami.session_data (
     job_id Nullable(UUID)
 ) ENGINE = ReplacingMergeTree
 ORDER BY (website_id, session_id, data_key) SETTINGS index_granularity = 8192;
--- stats hourly
+--- stats hourly
 CREATE TABLE IF NOT EXISTS umami.website_event_stats_hourly (
     website_id UUID,
     session_id UUID,
@@ -248,39 +176,24 @@ FROM (
             event_type,
             timestamp
     );
-
-
 -- Active Users View
-
 DROP VIEW IF EXISTS umami.active_users_mv;
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS umami.active_users_mv 
-ENGINE = AggregatingMergeTree 
-PARTITION BY toYYYYMM(max_created_at)
-ORDER BY (website_id, session_id) 
-AS SELECT 
-    website_id,
+CREATE MATERIALIZED VIEW IF NOT EXISTS umami.active_users_mv ENGINE = AggregatingMergeTree PARTITION BY toYYYYMM(max_created_at)
+ORDER BY (website_id, session_id) AS
+SELECT website_id,
     session_id,
     count() as visit_count,
     min(created_at) as first_seen,
     max(created_at) as last_seen,
-    max(created_at) as max_created_at  -- Added for partitioning
+    max(created_at) as max_created_at -- Added for partitioning
 FROM umami.website_event
-GROUP BY 
-    website_id,
+GROUP BY website_id,
     session_id;
-
-
 -- Page Views Stats View
-
 DROP VIEW IF EXISTS umami.pageviews_stats_mv;
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS umami.pageviews_stats_mv 
-ENGINE = AggregatingMergeTree 
-PARTITION BY toYYYYMM(max_created_at)
-ORDER BY (website_id, url_path) 
-AS SELECT 
-    website_id,
+CREATE MATERIALIZED VIEW IF NOT EXISTS umami.pageviews_stats_mv ENGINE = AggregatingMergeTree PARTITION BY toYYYYMM(max_created_at)
+ORDER BY (website_id, url_path) AS
+SELECT website_id,
     url_path,
     count() as views,
     uniqExact(session_id) as visitors,
@@ -290,14 +203,11 @@ AS SELECT
     max(created_at) as max_created_at
 FROM umami.website_event
 WHERE event_type = 1
-GROUP BY website_id, url_path;
-
-
+GROUP BY website_id,
+    url_path;
 -- Referrer Stats View
 DROP VIEW IF EXISTS umami.referrer_stats_mv;
-CREATE MATERIALIZED VIEW IF NOT EXISTS umami.referrer_stats_mv 
-ENGINE = AggregatingMergeTree 
-PARTITION BY toYYYYMM(max_created_at)
+CREATE MATERIALIZED VIEW IF NOT EXISTS umami.referrer_stats_mv ENGINE = AggregatingMergeTree PARTITION BY toYYYYMM(max_created_at)
 ORDER BY (website_id, referrer_domain) AS
 SELECT website_id,
     referrer_domain,
@@ -308,13 +218,11 @@ SELECT website_id,
     max(created_at) as max_created_at
 FROM umami.website_event
 WHERE referrer_domain != ''
-GROUP BY website_id, referrer_domain;
-
+GROUP BY website_id,
+    referrer_domain;
 -- Browser Stats View
 DROP VIEW IF EXISTS umami.browser_stats_mv;
-CREATE MATERIALIZED VIEW IF NOT EXISTS umami.browser_stats_mv 
-ENGINE = AggregatingMergeTree 
-PARTITION BY toYYYYMM(max_created_at)
+CREATE MATERIALIZED VIEW IF NOT EXISTS umami.browser_stats_mv ENGINE = AggregatingMergeTree PARTITION BY toYYYYMM(max_created_at)
 ORDER BY (website_id, browser) AS
 SELECT website_id,
     browser,
@@ -322,13 +230,11 @@ SELECT website_id,
     uniqExact(session_id) as visitors,
     max(created_at) as max_created_at
 FROM umami.website_event
-GROUP BY website_id, browser;
-
+GROUP BY website_id,
+    browser;
 -- OS Stats View
 DROP VIEW IF EXISTS umami.os_stats_mv;
-CREATE MATERIALIZED VIEW IF NOT EXISTS umami.os_stats_mv 
-ENGINE = AggregatingMergeTree 
-PARTITION BY toYYYYMM(max_created_at)
+CREATE MATERIALIZED VIEW IF NOT EXISTS umami.os_stats_mv ENGINE = AggregatingMergeTree PARTITION BY toYYYYMM(max_created_at)
 ORDER BY (website_id, os) AS
 SELECT website_id,
     os,
@@ -336,13 +242,11 @@ SELECT website_id,
     uniqExact(session_id) as visitors,
     max(created_at) as max_created_at
 FROM umami.website_event
-GROUP BY website_id, os;
-
+GROUP BY website_id,
+    os;
 -- Device Stats View
 DROP VIEW IF EXISTS umami.device_stats_mv;
-CREATE MATERIALIZED VIEW IF NOT EXISTS umami.device_stats_mv 
-ENGINE = AggregatingMergeTree 
-PARTITION BY toYYYYMM(max_created_at)
+CREATE MATERIALIZED VIEW IF NOT EXISTS umami.device_stats_mv ENGINE = AggregatingMergeTree PARTITION BY toYYYYMM(max_created_at)
 ORDER BY (website_id, device) AS
 SELECT website_id,
     device,
@@ -350,9 +254,8 @@ SELECT website_id,
     uniqExact(session_id) as visitors,
     max(created_at) as max_created_at
 FROM umami.website_event
-GROUP BY website_id, device;
-
-
+GROUP BY website_id,
+    device;
 -- projections
 ALTER TABLE umami.website_event
 ADD PROJECTION website_event_url_path_projection (
