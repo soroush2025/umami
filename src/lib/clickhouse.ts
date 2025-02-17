@@ -46,7 +46,7 @@ class ClickHousePool {
   constructor(
     config: PoolConfig = {
       min: 2,
-      max: 10,
+      max: 3,
       acquireTimeoutMillis: 30000,
       createTimeoutMillis: 30000,
       idleTimeoutMillis: 30000,
@@ -108,23 +108,47 @@ class ClickHousePool {
   }
 
   private async reapIdleConnections() {
-    const now = Date.now();
     const minClients = this.config.min;
 
-    this.clients = this.clients.filter(client => {
-      const idle = now - client.lastUsed > this.config.idleTimeoutMillis;
-      if (idle && this.clients.length > minClients) {
-        client.close();
-        log('Closed idle ClickHouse client');
-        return false;
-      }
+    // Track active clients
+    const activeClients = this.clients.filter(client => !client.isIdle);
+    const idleClients = this.clients.filter(client => client.isIdle);
+
+    // Keep only necessary idle clients
+    const keepCount = Math.max(minClients - activeClients.length, 0);
+    const excessIdleClients = idleClients.slice(keepCount);
+
+    // Close excess idle clients
+    for (const client of excessIdleClients) {
+      await client.close();
+      this.clients = this.clients.filter(c => c !== client);
+      log('Closed excess idle ClickHouse client');
+    }
+  }
+
+  // Add connection state check
+  private async checkConnection(client: PoolClient): Promise<boolean> {
+    try {
+      await client.ping();
       return true;
-    });
+    } catch (error) {
+      log('Client connection check failed:', error);
+      return false;
+    }
   }
 
   async acquire(): Promise<PoolClient> {
-    // Find an idle client
     let client = this.clients.find(c => c.isIdle);
+
+    if (client) {
+      // Verify connection is still valid
+      const isValid = await this.checkConnection(client);
+      if (!isValid) {
+        await client.close();
+        this.clients = this.clients.filter(c => c !== client);
+        client = null;
+      }
+    }
 
     // Create new client if none available and under max
     if (!client && this.clients.length < this.config.max) {
@@ -155,6 +179,17 @@ class ClickHousePool {
     client.isIdle = false;
     client.lastUsed = Date.now();
     return client;
+  }
+
+  async cleanup() {
+    for (const client of this.clients) {
+      try {
+        await client.close();
+      } catch (error) {
+        log('Error closing client:', error);
+      }
+    }
+    this.clients = [];
   }
 
   release(client: PoolClient) {
