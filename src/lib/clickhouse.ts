@@ -8,6 +8,25 @@ import { maxDate } from './date';
 import { filtersToArray } from './params';
 import { PageParams, QueryFilters, QueryOptions } from './types';
 
+const log = debug('umami:clickhouse');
+
+// Pool Configuration Interface
+interface PoolConfig {
+  min: number;
+  max: number;
+  acquireTimeoutMillis: number;
+  createTimeoutMillis: number;
+  idleTimeoutMillis: number;
+  reapIntervalMillis: number;
+}
+
+// Extended ClickHouse Client Interface for Pool
+interface PoolClient extends ClickHouseClient {
+  lastUsed: number;
+  isIdle: boolean;
+}
+
+// Date Formats Configuration
 export const CLICKHOUSE_DATE_FORMATS = {
   utc: '%Y-%m-%dT%H:%i:%SZ',
   second: '%Y-%m-%d %H:%i:%S',
@@ -18,41 +37,142 @@ export const CLICKHOUSE_DATE_FORMATS = {
   year: '%Y-01-01',
 };
 
-const log = debug('umami:clickhouse');
+// Connection Pool Implementation
+class ClickHousePool {
+  private clients: PoolClient[] = [];
+  private config: PoolConfig;
+  private connectionParams: any;
 
-let clickhouse: ClickHouseClient;
-const enabled = Boolean(process.env.CLICKHOUSE_URL);
-
-function getClient() {
-  const {
-    hostname,
-    port,
-    pathname,
-    protocol,
-    username = 'default',
-    password,
-  } = new URL(process.env.CLICKHOUSE_URL);
-
-  const client = createClient({
-    url: `${protocol}//${hostname}:${port}`,
-    database: pathname.replace('/', ''),
-    username: username,
-    password: password,
-    clickhouse_settings: {
-      date_time_input_format: 'best_effort',
-      date_time_output_format: 'iso',
+  constructor(
+    config: PoolConfig = {
+      min: 2,
+      max: 10,
+      acquireTimeoutMillis: 30000,
+      createTimeoutMillis: 30000,
+      idleTimeoutMillis: 30000,
+      reapIntervalMillis: 1000,
     },
-  });
-
-  if (process.env.NODE_ENV !== 'production') {
-    global[CLICKHOUSE] = client;
+  ) {
+    this.config = config;
+    this.initialize();
   }
 
-  log('Clickhouse initialized');
+  private async initialize() {
+    const {
+      hostname,
+      port,
+      pathname,
+      protocol,
+      username = 'default',
+      password,
+    } = new URL(process.env.CLICKHOUSE_URL);
 
-  return client;
+    this.connectionParams = {
+      url: `${protocol}//${hostname}:${port}`,
+      database: pathname.replace('/', ''),
+      username: username,
+      password: password,
+      clickhouse_settings: {
+        date_time_input_format: 'best_effort',
+        date_time_output_format: 'iso',
+      },
+    };
+
+    // Create minimum number of connections
+    for (let i = 0; i < this.config.min; i++) {
+      await this.createClient();
+    }
+
+    // Start the reaper
+    this.startReaper();
+  }
+
+  private async createClient(): Promise<PoolClient> {
+    const client = createClient(this.connectionParams) as PoolClient;
+    client.lastUsed = Date.now();
+    client.isIdle = true;
+    this.clients.push(client);
+
+    if (process.env.NODE_ENV !== 'production') {
+      global[CLICKHOUSE] = client;
+    }
+
+    log('Created new ClickHouse client');
+    return client;
+  }
+
+  private startReaper() {
+    setInterval(() => {
+      this.reapIdleConnections();
+    }, this.config.reapIntervalMillis);
+  }
+
+  private async reapIdleConnections() {
+    const now = Date.now();
+    const minClients = this.config.min;
+
+    this.clients = this.clients.filter(client => {
+      const idle = now - client.lastUsed > this.config.idleTimeoutMillis;
+      if (idle && this.clients.length > minClients) {
+        client.close();
+        log('Closed idle ClickHouse client');
+        return false;
+      }
+      return true;
+    });
+  }
+
+  async acquire(): Promise<PoolClient> {
+    // Find an idle client
+    let client = this.clients.find(c => c.isIdle);
+
+    // Create new client if none available and under max
+    if (!client && this.clients.length < this.config.max) {
+      client = await this.createClient();
+    }
+
+    // Wait for an idle client if at max
+    if (!client) {
+      client = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Timeout acquiring client'));
+        }, this.config.acquireTimeoutMillis);
+
+        const checkForIdleClient = () => {
+          const idleClient = this.clients.find(c => c.isIdle);
+          if (idleClient) {
+            clearTimeout(timeout);
+            resolve(idleClient);
+          } else {
+            setTimeout(checkForIdleClient, 100);
+          }
+        };
+
+        checkForIdleClient();
+      });
+    }
+
+    client.isIdle = false;
+    client.lastUsed = Date.now();
+    return client;
+  }
+
+  release(client: PoolClient) {
+    client.isIdle = true;
+    client.lastUsed = Date.now();
+  }
+
+  async end() {
+    await Promise.all(this.clients.map(client => client.close()));
+    this.clients = [];
+  }
 }
 
+// Create singleton pool instance
+const pool = new ClickHousePool();
+const enabled = Boolean(process.env.CLICKHOUSE_URL);
+
+// Utility Functions
 function getUTCString(date?: Date | string | number) {
   return formatInTimeZone(date || new Date(), 'UTC', 'yyyy-MM-dd HH:mm:ss');
 }
@@ -61,7 +181,6 @@ function getDateStringSQL(data: any, unit: string = 'utc', timezone?: string) {
   if (timezone) {
     return `formatDateTime(${data}, '${CLICKHOUSE_DATE_FORMATS[unit]}', '${timezone}')`;
   }
-
   return `formatDateTime(${data}, '${CLICKHOUSE_DATE_FORMATS[unit]}')`;
 }
 
@@ -154,6 +273,46 @@ async function parseFilters(websiteId: string, filters: QueryFilters = {}, optio
   };
 }
 
+// Database Operations with Connection Pool
+async function rawQuery<T = unknown>(
+  query: string,
+  params: Record<string, unknown> = {},
+): Promise<T> {
+  if (process.env.LOG_QUERY) {
+    log('QUERY:\n', query);
+    log('PARAMETERS:\n', params);
+  }
+
+  const client = await pool.acquire();
+  try {
+    const resultSet = await client.query({
+      query: query,
+      query_params: params,
+      format: 'JSONEachRow',
+    });
+
+    return (await resultSet.json()) as T;
+  } finally {
+    pool.release(client);
+  }
+}
+
+async function insert(table: string, values: any[]) {
+  const client = await pool.acquire();
+  try {
+    return await client.insert({
+      table,
+      values,
+      format: 'JSONEachRow',
+      clickhouse_settings: {
+        date_time_input_format: 'best_effort',
+      },
+    });
+  } finally {
+    pool.release(client);
+  }
+}
+
 async function pagedQuery(
   query: string,
   queryParams: { [key: string]: any },
@@ -180,37 +339,6 @@ async function pagedQuery(
   return { data, count, page: +page, pageSize: size, orderBy };
 }
 
-async function rawQuery<T = unknown>(
-  query: string,
-  params: Record<string, unknown> = {},
-): Promise<T> {
-  if (process.env.LOG_QUERY) {
-    log('QUERY:\n', query);
-    log('PARAMETERS:\n', params);
-  }
-
-  await connect();
-
-  const resultSet = await clickhouse.query({
-    query: query,
-    query_params: params,
-    format: 'JSONEachRow',
-  });
-
-  return (await resultSet.json()) as T;
-}
-
-async function insert(table: string, values: any[]) {
-  await connect();
-  return clickhouse.insert({
-    table,
-    values,
-    format: 'JSONEachRow',
-    clickhouse_settings: {
-      date_time_input_format: 'best_effort',
-    },
-  });
-}
 async function findUnique(data: any[]) {
   if (data.length > 1) {
     throw `${data.length} records found when expecting 1.`;
@@ -223,19 +351,17 @@ async function findFirst(data: any[]) {
   return data[0] ?? null;
 }
 
-async function connect() {
-  if (enabled && !clickhouse) {
-    clickhouse = process.env.CLICKHOUSE_URL && (global[CLICKHOUSE] || getClient());
-  }
-
-  return clickhouse;
-}
-
+// Export Database Interface
 export default {
   enabled,
-  client: clickhouse,
+  pool,
   log,
-  connect,
+  connect: async () => {
+    if (enabled) {
+      return pool.acquire();
+    }
+    return null;
+  },
   getDateStringSQL,
   getDateSQL,
   getSearchSQL,
