@@ -79,29 +79,26 @@ async function clickhouseQuery(data: {
   sessionData: DynamicData;
 }) {
   const { websiteId, sessionId, sessionData } = data;
-
   const { insert, getUTCString } = clickhouse;
-  const { sendMessages } = kafka;
   const createdAt = getUTCString();
 
   const jsonKeys = flattenJSON(sessionData);
 
-  const messages = jsonKeys.map(({ key, value, dataType }) => {
-    return {
-      website_id: websiteId,
-      session_id: sessionId,
-      data_key: key,
-      data_type: dataType,
-      string_value: getStringValue(value, dataType),
-      number_value: dataType === DATA_TYPE.number ? value : null,
-      date_value: dataType === DATA_TYPE.date ? getUTCString(value) : null,
-      created_at: createdAt,
-    };
-  });
+  const messages = jsonKeys.map(({ key, value, dataType }) => ({
+    website_id: websiteId,
+    session_id: sessionId,
+    data_key: key,
+    data_type: dataType,
+    string_value: getStringValue(value, dataType),
+    number_value: dataType === DATA_TYPE.number ? value : null,
+    date_value: dataType === DATA_TYPE.date ? getUTCString(value) : null,
+    created_at: createdAt,
+  }));
 
   if (kafka.enabled) {
-    await sendMessages('session_data', messages);
+    await kafka.sendMessages('session_data', messages);
   } else {
+    // Use the pool-based insert from new clickhouse.ts
     await insert('session_data', messages);
   }
 
